@@ -70,6 +70,19 @@ async function run() {
 
     }
 
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email
+      const query = { email }
+
+      const user = await usersCollection.findOne(query)
+
+      if (!user || user.role !== 'admin') {
+        return res.status(403).send({ message: 'forbidden access' })
+      }
+
+      next()
+    }
+
     app.post('/users', async (req, res) => {
       const email = req.body.email
       const userData = req.body
@@ -97,7 +110,7 @@ async function run() {
     });
 
     // toggle role
-    app.patch('/users/role/:id', async (req, res) => {
+    app.patch('/users/role/:id', verifyToken, verifyAdmin, async (req, res) => {
       const { role } = req.body;                       // 'admin' or 'user'
       const result = await usersCollection.updateOne(
         { _id: new ObjectId(req.params.id) },
@@ -139,7 +152,7 @@ async function run() {
     })
 
     // get pending rider
-    app.get('/riders/pending', async (req, res) => {
+    app.get('/riders/pending', verifyToken, verifyAdmin, async (req, res) => {
       try {
         const pendingRiders = await riderCollection.find({ status: "pending" }).toArray();
         res.send(pendingRiders);
@@ -171,10 +184,62 @@ async function run() {
     });
 
     //  get approved riders 
-    app.get('/riders/approved', async (req, res) => {
+    app.get('/riders/approved', verifyToken, verifyAdmin, async (req, res) => {
       const riders = await riderCollection.find({ status: "approved" }).toArray();
       res.send(riders);
     });
+
+    app.get('/riders/available', async (req, res) => {
+      const district = req.query.district;
+      const riders = await riderCollection.find({
+        district,
+        // status: 'active'
+      }).toArray();
+      res.send(riders);
+    });
+
+
+    app.patch('/assign-rider', async (req, res) => {
+      const { parcelId, riderId } = req.body;
+
+      if (!parcelId || !riderId) {
+        return res.status(400).send({ error: 'parcelId and riderId are required' });
+      }
+
+      try {
+        // 1. Update parcel's delivery status
+        const parcelUpdate = await parcelsCollection.updateOne(
+          { _id: new ObjectId(parcelId) },
+          {
+            $set: {
+              delivery_status: 'in-transit',
+              // assigned_rider: new ObjectId(riderId),
+            },
+          }
+        );
+
+        // 2. Update rider's work status
+        const riderUpdate = await riderCollection.updateOne(
+          { _id: new ObjectId(riderId) },
+          {
+            $set: {
+              work_status: 'in-delivery',
+            },
+          }
+        );
+
+        if (parcelUpdate.modifiedCount > 0 && riderUpdate.modifiedCount > 0) {
+          res.send({ success: true, message: 'Rider assigned successfully' });
+        } else {
+          res.status(400).send({ success: false, message: 'Update failed' });
+        }
+      } catch (error) {
+        res.status(500).send({ error: 'Server error while assigning rider' });
+      }
+    });
+
+
+
 
     // get all parcel
     app.get('/allparcel', async (req, res) => {
@@ -185,19 +250,36 @@ async function run() {
     // get my Parcels
     app.get('/myparcels', verifyToken, async (req, res) => {
       const email = req.query.email;     // e.g. /parcels?email=user@example.com
-      const filter = email ? { created_by: email } : {};
-      // console.log(req.decoded.email);
+      const query = email ? { created_by: email } : {};
+
       try {
         const parcels = await parcelsCollection
-          .find(filter)
-          .sort({ creation_date: -1 })       // newest first
+          .find(query)
+          .sort({ creation_date: -1 })
           .toArray();
 
-        res.send(parcels);               // ✅ send the array
+        res.send(parcels);
       } catch (error) {
         res.status(500).send({ success: false, message: 'Failed to fetch parcels' });
       }
     });
+
+    // parcels for assign
+    app.get('/parcels/assigned', async (req, res) => {
+      try {
+        const filter = {
+          payment_status: "paid",
+          delivery_status: "not-collected"
+        };
+
+        const parcels = await parcelsCollection.find(filter).toArray();
+        res.send(parcels);
+      } catch (error) {
+        console.error("Error fetching assigned parcels:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
 
     // get spacific parcel by id
     app.get('/parcels/:id', async (req, res) => {
