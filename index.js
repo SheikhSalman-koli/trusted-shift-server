@@ -43,7 +43,7 @@ async function run() {
     riderCollection = db.collection('riders');
     parcelsCollection = db.collection('parcels');
     paymentsCollection = db.collection('payment')
-
+    cashoutsCollection = db.collection('cashout')
 
     const verifyToken = async (req, res, next) => {
       const authHeaters = req.headers.authorization;
@@ -200,7 +200,7 @@ async function run() {
 
 
     app.patch('/assign-rider', async (req, res) => {
-      const { parcelId, riderId } = req.body;
+      const { parcelId, riderId, riderName, riderEmail } = req.body;
 
       if (!parcelId || !riderId) {
         return res.status(400).send({ error: 'parcelId and riderId are required' });
@@ -212,8 +212,10 @@ async function run() {
           { _id: new ObjectId(parcelId) },
           {
             $set: {
-              delivery_status: 'in-transit',
-              // assigned_rider: new ObjectId(riderId),
+              delivery_status: 'rider-assigned',
+              assigned_rider_id: riderId,
+              assigned_rider_name: riderName,
+              assigned_rider_email: riderEmail
             },
           }
         );
@@ -238,7 +240,138 @@ async function run() {
       }
     });
 
+    // pending parcel 
+    app.get('/parcels/rider-pending', async (req, res) => {
+      const riderEmail = req.query.email;
 
+      if (!riderEmail) {
+        return res.status(400).send({ error: 'Rider email is required' });
+      }
+
+      try {
+        const pendingParcels = await parcelsCollection.find({
+          assigned_rider_email: riderEmail,
+          delivery_status: { $in: ['rider-assigned', 'in-transit'] },
+        }).toArray();
+
+        res.send(pendingParcels);
+      } catch (error) {
+        console.error('Error fetching rider pending parcels:', error);
+        res.status(500).send({ error: 'Server error while fetching parcels' });
+      }
+    });
+
+
+    // delivery_status update by rider to in_transit or delivered
+    app.patch('/parcels/:id/status', async (req, res) => {
+      const parcelId = req.params.id;
+      const { delivery_status } = req.body;
+
+      if (!delivery_status) {
+        return res.status(400).send({ error: 'delivery_status is required' });
+      }
+
+      try {
+        const result = await parcelsCollection.updateOne(
+          { _id: new ObjectId(parcelId) },
+          { $set: { delivery_status } }
+        );
+
+        if (result.modifiedCount > 0) {
+          res.send({ success: true, message: `Parcel status updated to ${delivery_status}` });
+        } else {
+          res.status(404).send({ success: false, message: 'Parcel not found or status unchanged' });
+        }
+      } catch (error) {
+        console.error('Error updating parcel status:', error);
+        res.status(500).send({ success: false, message: 'Server error updating parcel status' });
+      }
+    });
+
+
+    // completed parcels of rider
+    app.get('/rider/completed-parcels', async (req, res) => {
+      const email = req.query.email;
+      const parcels = await parcelsCollection
+        .find({ assigned_rider_email: email, delivery_status: 'delivered' })
+        .toArray();
+      res.send(parcels);
+    });
+
+
+    // POST /cashout
+    app.post('/cashout', async (req, res) => {
+      const { riderEmail, parcelId } = req.body;
+
+      if (!riderEmail) {
+        return res.status(400).send({ error: 'riderEmail is required' });
+      }
+
+      try {
+        // 1. Find delivered parcels not yet cashed out
+        const parcels = await parcelsCollection.find({
+          assigned_rider_email: riderEmail,
+          delivery_status: 'delivered',
+          // cashout_status: { $ne: true },
+        }).toArray();
+
+        if (parcels.length === 0) {
+          return res.status(404).send({ message: 'No eligible parcels found' });
+        }
+
+        // 2. Calculate total earning
+        let total = 0;
+        for (const parcel of parcels) {
+          const sameDistrict = parcel.senderServiceCenter === parcel.receiverServiceCenter;
+          const rate = sameDistrict ? 0.2 : 0.3;
+          total += parcel.deliveryCost * rate;
+        }
+
+        // 3. Create a cashout request (you may save it to a `cashouts` collection)
+        const cashoutRecord = {
+          riderEmail,
+          totalAmount: parseFloat(total.toFixed(2)),
+          parcelIds: parcels.map(p => p._id),
+          request_date: new Date(),
+          status: 'pending'
+        };
+        await cashoutsCollection.insertOne(cashoutRecord);
+
+        // 4. Update parcels with cashout_status = true
+        // const ids = parcels.map(p => p._id);
+        // await parcelsCollection.updateMany(
+        //   { _id: { $in: ids } },
+        //   { $set: { cashout_status: true } }
+        // );
+        await parcelsCollection.updateOne(
+          { _id: new ObjectId(parcelId) },
+          { $set: { cashout_status: true } }
+        );
+
+        res.send({ success: true, totalAmount: cashoutRecord.totalAmount });
+      } catch (err) {
+        console.error('Cashout error:', err);
+        res.status(500).send({ error: 'Server error' });
+      }
+    });
+
+    // cash out history of a rider
+    // GET /cashouts?riderEmail=noton@gmail.com
+    app.get('/cashouts', async (req, res) => {
+      const { riderEmail } = req.query;
+
+      if (!riderEmail) {
+        return res.status(400).send({ error: 'riderEmail is required' });
+      }
+
+      try {
+        const records = await cashoutsCollection.find({ riderEmail }).toArray();
+        res.send(records);
+      } catch (error) {
+        console.error('Error loading cashouts:', error);
+        res.status(500).send({ error: 'Server error' });
+      }
+    });
 
 
     // get all parcel
