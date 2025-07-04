@@ -44,6 +44,7 @@ async function run() {
     parcelsCollection = db.collection('parcels');
     paymentsCollection = db.collection('payment')
     cashoutsCollection = db.collection('cashout')
+    trackingCollection = db.collection('tracking')
 
     const verifyToken = async (req, res, next) => {
       const authHeaters = req.headers.authorization;
@@ -51,9 +52,7 @@ async function run() {
       if (!authHeaters) {
         return res.status(401).send({ message: 'unauthorized access' })
       }
-
       const token = authHeaters.split(' ')[1]
-
       if (!token) {
         return res.status(401).send({ message: 'unauthorized access' })
       }
@@ -82,6 +81,8 @@ async function run() {
 
       next()
     }
+
+    // const verifyRider
 
     app.post('/users', async (req, res) => {
       const email = req.body.email
@@ -193,7 +194,7 @@ async function run() {
       const district = req.query.district;
       const riders = await riderCollection.find({
         district,
-        // status: 'active'
+        work_status: ""
       }).toArray();
       res.send(riders);
     });
@@ -201,6 +202,8 @@ async function run() {
 
     app.patch('/assign-rider', async (req, res) => {
       const { parcelId, riderId, riderName, riderEmail } = req.body;
+
+      console.log("Assign rider request:", req.body);
 
       if (!parcelId || !riderId) {
         return res.status(400).send({ error: 'parcelId and riderId are required' });
@@ -265,7 +268,7 @@ async function run() {
     // delivery_status update by rider to in_transit or delivered
     app.patch('/parcels/:id/status', async (req, res) => {
       const parcelId = req.params.id;
-      const { delivery_status } = req.body;
+      const { delivery_status, riderEmail } = req.body;
 
       if (!delivery_status) {
         return res.status(400).send({ error: 'delivery_status is required' });
@@ -276,6 +279,13 @@ async function run() {
           { _id: new ObjectId(parcelId) },
           { $set: { delivery_status } }
         );
+
+        if (delivery_status === 'delivered') {
+          await riderCollection.updateOne(
+            { email: riderEmail },
+            { $set: { work_status: "" } }
+          )
+        }
 
         if (result.modifiedCount > 0) {
           res.send({ success: true, message: `Parcel status updated to ${delivery_status}` });
@@ -298,6 +308,28 @@ async function run() {
       res.send(parcels);
     });
 
+    // aggrigate by delivery_status
+    app.get('/parcel/aggrigate/delivery_status', async (req, res) => {
+
+      const pipline = [
+        {
+          $group: {
+            _id: '$delivery_status',
+            count: { $sum: 1 }
+          }
+        },
+        {
+          $project: {
+            status: '$_id',
+            count: 1,
+            _id: 0
+          }
+        }
+      ]
+
+      const result = await parcelsCollection.aggregate(pipline).toArray()
+      res.send(result)
+    })
 
     // POST /cashout
     app.post('/cashout', async (req, res) => {
@@ -354,6 +386,51 @@ async function run() {
         res.status(500).send({ error: 'Server error' });
       }
     });
+
+
+    // see all pending cashout
+    app.get('/cashouts/allow', async (req, res) => {
+      try {
+        const cashouts = await cashoutsCollection.find({ status: "pending" }).toArray();
+        res.send(cashouts);
+      } catch (error) {
+        console.error('Error fetching cashouts:', error);
+        res.status(500).send({ message: 'Internal server error' });
+      }
+    });
+
+    // pending cashout aprove by admin
+    app.patch("/cashouts/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await cashoutsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: "approved" } }
+      );
+      res.send(result);
+    });
+
+
+    // create a tracking collection
+    app.post("/tracking", async (req, res) => {
+      const trackingData = req.body; // should contain step, parcelId/trackingId, etc.
+
+      trackingData.time = new Date();
+
+      const result = await trackingCollection.insertOne(trackingData);
+
+      res.send(result);
+    });
+
+    // get tracking data
+    app.get("/tracking/:parcelId", async (req, res) => {
+      const parcelId = req.params.parcelId;
+      const result = await trackingCollection
+        .find({ parcelId: new ObjectId(parcelId) })
+        .sort({ time: 1 })
+        .toArray();
+      res.send(result);
+    });
+
 
     // cash out history of a rider
     // GET /cashouts?riderEmail=noton@gmail.com
