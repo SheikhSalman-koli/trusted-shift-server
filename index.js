@@ -17,8 +17,8 @@ app.use(cors());
 app.use(express.json());
 
 
-
-const serviceAccount = require("./trusted-shift-firebase-adminsdk.json");
+const decodedKey = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf-8')
+const serviceAccount = JSON.parse(decodedKey)
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
