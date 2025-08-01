@@ -4,6 +4,7 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const admin = require("firebase-admin");
+const { default: axios } = require('axios');
 
 // Load environment variables from .env
 dotenv.config();
@@ -15,6 +16,7 @@ const port = process.env.PORT || 5000;
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded())
 
 
 const decodedKey = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf-8')
@@ -609,6 +611,100 @@ async function run() {
         res.status(500).send({ success: false, message: 'Error fetching payments' });
       }
     });
+
+    // Store ID: bistr688b4610b57c2
+    // Store Password (API/Secret Key): bistr688b4610b57c2@ssl
+
+    // Merchant Panel URL: https://sandbox.sslcommerz.com/manage/ (Credential as you inputted in the time of registration)
+    // Store name: testbistr81pi
+    // Registered URL: www.bistroboss.com
+    // Session API to generate transaction: https://sandbox.sslcommerz.com/gwprocess/v3/api.php
+    // Validation API: https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php?wsdl
+    // Validation API (Web Service) name: https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php
+    // You may check our plugins available for multiple carts and libraries: https://github.com/sslcommerz
+
+    // SSL COMMERZ PAYMENT
+    app.post('/create/ssl/payments', async (req, res) => {
+      const payment = req.body
+      const trxId = new ObjectId().toString()
+
+      payment.transactionId = trxId
+
+      const initiate = {
+        store_id: "bistr688b4610b57c2",
+        store_passwd: "bistr688b4610b57c2@ssl",
+        total_amount: payment?.amount,
+        currency: "BDT",
+        tran_id: trxId, // use unique tran_id for each api call
+        success_url: "http://localhost:5000/payment-success",
+        fail_url: "http://localhost:5173/fail",
+        cancel_url: "http://localhost:5173/cancle",
+        ipn_url: "http://localhost:5000/ipn",
+        shipping_method: "Courier",
+        product_name: "Computer.",
+        product_category: "Electronic",
+        product_profile: "general",
+        cus_name: "Customer Name",
+        cus_email: payment?.paidBy,
+        cus_add1: "Dhaka",
+        cus_add2: "Dhaka",
+        cus_city: "Dhaka",
+        cus_state: "Dhaka",
+        cus_postcode: "1000",
+        cus_country: "Bangladesh",
+        cus_phone: "01711111111",
+        cus_fax: "01711111111",
+        ship_name: "Customer Name",
+        ship_add1: "Dhaka",
+        ship_add2: "Dhaka",
+        ship_city: "Dhaka",
+        ship_state: "Dhaka",
+        ship_postcode: 1000,
+        ship_country: "Bangladesh",
+      };
+
+      const isResponse = await axios({
+        url: `https://sandbox.sslcommerz.com/gwprocess/v4/api.php`,
+        method: "POST",
+        data: initiate,
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        }
+      })
+      const saveData = await paymentsCollection.insertOne(payment)
+      const getWayUrl = isResponse?.data?.GatewayPageURL
+      // console.log("getWayUrl", getWayUrl);
+      res.send({ getWayUrl })
+    })
+
+
+
+    app.post('/payment-success', async (req, res) => {
+      // success payment data
+      const paymentSuccess = req.body
+      // validation
+      const {data} =await axios.get(`https://sandbox.sslcommerz.com/validator/api/validationserverAPI.php?val_id=${paymentSuccess?.val_id}&store_id=bistr688b4610b57c2&store_passwd=bistr688b4610b57c2@ssl`)
+
+      if(data?.status !== "VALID"){
+        return res.send({message: "invalid payment"})
+      }
+
+      // update
+      const updateStatus =await paymentsCollection.updateOne(
+        {transactionId: data?.tran_id},
+        {
+          $set: {
+            status: "success"
+          }
+        }
+      )
+
+      res.redirect(`http://localhost:5173/payment/success`)
+
+    // console.log("transactionId", updateStatus);
+      // console.log("isValidPayment", isValidPayment);
+
+    })
 
 
 
